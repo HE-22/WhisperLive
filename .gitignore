@@ -1,3 +1,12 @@
+# Added
+*.ts
+*.vtt
+*.m3u8
+*.wav
+*.mp3
+settings.json
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

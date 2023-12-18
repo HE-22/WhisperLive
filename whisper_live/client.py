@@ -11,6 +11,9 @@ import json
 import websocket
 import uuid
 import time
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 
 def resample(file: str, sr: int = 16000):
@@ -22,7 +25,7 @@ def resample(file: str, sr: int = 16000):
     Args:
         file (str): The audio file to open
         sr (int): The sample rate to resample the audio if necessary
-    
+
     Returns:
         resampled_file (str): The resampled audio file
     """
@@ -47,6 +50,7 @@ class Client:
     """
     Handles audio recording, streaming, and communication with a server using WebSocket.
     """
+
     INSTANCES = {}
 
     def __init__(
@@ -123,7 +127,7 @@ class Client:
     def on_message(self, ws, message):
         """
         Callback function called when a message is received from the server.
-        
+
         It updates various attributes of the client based on the received message, including
         recording status, language detection, and server messages. If a disconnect message
         is received, it sets the recording status to False.
@@ -195,7 +199,7 @@ class Client:
     def on_open(self, ws):
         """
         Callback function called when the WebSocket connection is successfully opened.
-        
+
         Sends an initial configuration message to the server, including client UID, multilingual mode,
         language selection, and task type.
 
@@ -221,8 +225,8 @@ class Client:
     def bytes_to_float_array(audio_bytes):
         """
         Convert audio data from bytes to a NumPy float array.
-        
-        It assumes that the audio data is in 16-bit PCM format. The audio data is normalized to 
+
+        It assumes that the audio data is in 16-bit PCM format. The audio data is normalized to
         have values between -1 and 1.
 
         Args:
@@ -250,10 +254,10 @@ class Client:
     def play_file(self, filename):
         """
         Play an audio file and send it to the server for processing.
-        
+
         Reads an audio file, plays it through the audio output, and simultaneously sends
-        the audio data to the server for processing. It uses PyAudio to create an audio 
-        stream for playback. The audio data is read from the file in chunks, converted to 
+        the audio data to the server for processing. It uses PyAudio to create an audio
+        stream for playback. The audio data is read from the file in chunks, converted to
         floating-point format, and sent to the server using WebSocket communication.
         This method is typically used when you want to process pre-recorded audio and send it
         to the server in real-time.
@@ -261,7 +265,7 @@ class Client:
         Args:
             filename (str): The path to the audio file to be played and sent to the server.
         """
-        
+
         # read audio and create pyaudio stream
         with wave.open(filename, "rb") as wavfile:
             self.stream = self.p.open(
@@ -285,7 +289,10 @@ class Client:
                 wavfile.close()
 
                 assert self.last_response_recieved
-                while time.time() - self.last_response_recieved < self.disconnect_if_no_response_for:
+                while (
+                    time.time() - self.last_response_recieved
+                    < self.disconnect_if_no_response_for
+                ):
                     continue
                 self.stream.close()
                 self.close_websocket()
@@ -302,7 +309,7 @@ class Client:
         """
         Close the WebSocket connection and join the WebSocket thread.
 
-        First attempts to close the WebSocket connection using `self.client_socket.close()`. After 
+        First attempts to close the WebSocket connection using `self.client_socket.close()`. After
         closing the connection, it joins the WebSocket thread to ensure proper termination.
 
         """
@@ -329,7 +336,7 @@ class Client:
         """
         Write audio frames to a WAV file.
 
-        The WAV file is created or overwritten with the specified name. The audio frames should be 
+        The WAV file is created or overwritten with the specified name. The audio frames should be
         in the correct format and match the specified channel, sample width, and sample rate.
 
         Args:
@@ -344,6 +351,40 @@ class Client:
             wavfile.setframerate(self.rate)
             wavfile.writeframes(frames)
 
+
+    # TODO: ahdnle json and audion messages
+    def process_websocket_stream(self, ws_uri: str):
+        """
+        Connect to a WebSocket source, process the audio stream, and send it for transcription.
+
+        Args:
+            ws_uri (str): The URI of the WebSocket source.
+        """
+        logging.info("[INFO]: Connecting to WebSocket stream...")
+
+        def on_message(ws, message):
+            # Process the incoming message as audio bytes
+            audio_array = self.bytes_to_float_array(message)
+            self.send_packet_to_server(audio_array.tobytes())
+
+        def on_error(ws, error):
+            logging.error(f"[ERROR]: WebSocket error: {error}")
+
+        def on_close(ws, close_status_code, close_msg):
+            logging.info(
+                f"[INFO]: WebSocket connection closed: {close_status_code}, {close_msg}"
+            )
+
+        # Create WebSocket client
+        ws_client = websocket.WebSocketApp(
+            ws_uri, on_message=on_message, on_error=on_error, on_close=on_close
+        )
+
+        # Start the WebSocket client in a thread
+        ws_thread = threading.Thread(target=ws_client.run_forever)
+        ws_thread.setDaemon(True)
+        ws_thread.start()
+
     def process_hls_stream(self, hls_url):
         """
         Connect to an HLS source, process the audio stream, and send it for transcription.
@@ -351,15 +392,14 @@ class Client:
         Args:
             hls_url (str): The URL of the HLS stream source.
         """
-        print("[INFO]: Connecting to HLS stream...")
+        logging.info("[INFO]: Connecting to HLS stream...")
         process = None  # Initialize process to None
 
         try:
             # Connecting to the HLS stream using ffmpeg-python
             process = (
-                ffmpeg
-                .input(hls_url, threads=0)
-                .output('-', format='s16le', acodec='pcm_s16le', ac=1, ar=self.rate)
+                ffmpeg.input(hls_url, threads=0)
+                .output("-", format="s16le", acodec="pcm_s16le", ac=1, ar=self.rate)
                 .run_async(pipe_stdout=True, pipe_stderr=True)
             )
 
@@ -367,18 +407,18 @@ class Client:
             while True:
                 in_bytes = process.stdout.read(self.chunk * 2)  # 2 bytes per sample
                 if not in_bytes:
+                    logging.info("[INFO]: No more bytes to read from HLS stream.")
                     break
                 audio_array = self.bytes_to_float_array(in_bytes)
                 self.send_packet_to_server(audio_array.tobytes())
 
         except Exception as e:
-            print(f"[ERROR]: Failed to connect to HLS stream: {e}")
+            logging.error(f"[ERROR]: Failed to connect to HLS stream: {e}")
         finally:
             if process:
                 process.kill()
 
-        print("[INFO]: HLS stream processing finished.")
-
+        logging.info("[INFO]: HLS stream processing finished.")
 
     def record(self, out_file="output_recording.wav"):
         """
@@ -390,7 +430,7 @@ class Client:
 
         Audio data is saved in chunks to the "chunks" directory. Each chunk is saved as a separate WAV file.
         The recording will continue until the specified duration is reached or until the `RECORDING` flag is set to `False`.
-        The recording process can be interrupted by sending a KeyboardInterrupt (e.g., pressing Ctrl+C). After recording, 
+        The recording process can be interrupted by sending a KeyboardInterrupt (e.g., pressing Ctrl+C). After recording,
         the method combines all the saved audio chunks into the specified `out_file`.
 
         Args:
@@ -440,8 +480,8 @@ class Client:
     def write_output_recording(self, n_audio_file, out_file):
         """
         Combine and save recorded audio chunks into a single WAV file.
-        
-        The individual audio chunk files are expected to be located in the "chunks" directory. Reads each chunk 
+
+        The individual audio chunk files are expected to be located in the "chunks" directory. Reads each chunk
         file, appends its audio data to the final recording, and then deletes the chunk file. After combining
         and saving, the final recording is stored in the specified `out_file`.
 
@@ -497,20 +537,22 @@ class TranscriptionClient:
         transcription_client()
         ```
     """
+
     def __init__(self, host, port, is_multilingual=False, lang=None, translate=False):
         self.client = Client(host, port, is_multilingual, lang, translate)
 
-    def __call__(self, audio=None, hls_url=None):
+    def __call__(self, audio=None, hls_url=None, ws_uri=None):
         """
         Start the transcription process.
 
         Initiates the transcription process by connecting to the server via a WebSocket. It waits for the server
-        to be ready to receive audio data and then sends audio for transcription. If an audio file is provided, it 
+        to be ready to receive audio data and then sends audio for transcription. If an audio file is provided, it
         will be played and streamed to the server; otherwise, it will perform live recording.
 
         Args:
             audio (str, optional): Path to an audio file for transcription. Default is None, which triggers live recording.
-                   
+            hls_url (str, optional): URL of an HLS stream source. Default is None.
+            ws_uri (str, optional): URI of a WebSocket stream source. Default is None.
         """
         print("[INFO]: Waiting for server ready ...")
         while not self.client.recording:
@@ -519,7 +561,10 @@ class TranscriptionClient:
                 return
             pass
         print("[INFO]: Server Ready!")
-        if hls_url is not None:
+
+        if ws_uri is not None:
+            self.client.process_websocket_stream(ws_uri)
+        elif hls_url is not None:
             self.client.process_hls_stream(hls_url)
         elif audio is not None:
             resampled_file = resample(audio)

@@ -54,18 +54,17 @@ class Client:
     INSTANCES = {}
 
     def __init__(
-        self, host=None, port=None, is_multilingual=False, lang=None, translate=False
+        self, cloud_run_url=None, is_multilingual=False, lang=None, translate=False
     ):
         """
         Initializes a Client instance for audio recording and streaming to a server.
 
-        If host and port are not provided, the WebSocket connection will not be established.
+        If cloud_run_url is not provided, the WebSocket connection will not be established.
         When translate is True, the task will be set to "translate" instead of "transcribe".
-        he audio recording starts immediately upon initialization.
+        The audio recording starts immediately upon initialization.
 
         Args:
-            host (str): The hostname or IP address of the server.
-            port (int): The port number for the WebSocket server.
+            cloud_run_url (str): The Google Cloud Run URL of the server.
             is_multilingual (bool, optional): Specifies if multilingual transcription is enabled. Default is False.
             lang (str, optional): The selected language for transcription when multilingual is disabled. Default is None.
             translate (bool, optional): Specifies if the task is translation. Default is False.
@@ -99,10 +98,9 @@ class Client:
             frames_per_buffer=self.chunk,
         )
 
-        if host is not None and port is not None:
-            socket_url = f"ws://{host}:{port}"
+        if cloud_run_url is not None:
             self.client_socket = websocket.WebSocketApp(
-                socket_url,
+                cloud_run_url,
                 on_open=lambda ws: self.on_open(ws),
                 on_message=lambda ws, message: self.on_message(ws, message),
                 on_error=lambda ws, error: self.on_error(ws, error),
@@ -111,7 +109,7 @@ class Client:
                 ),
             )
         else:
-            print("[ERROR]: No host or port specified.")
+            logging.error("No Google Cloud Run URL specified.")
             return
 
         Client.INSTANCES[self.uid] = self
@@ -122,7 +120,7 @@ class Client:
         self.ws_thread.start()
 
         self.frames = b""
-        print("[INFO]: * recording")
+        logging.info("* recording")
 
     def on_message(self, ws, message):
         """
@@ -141,17 +139,17 @@ class Client:
         message = json.loads(message)
 
         if self.uid != message.get("uid"):
-            print("[ERROR]: invalid client uid")
+            logging.error("invalid client uid")
             return
 
         if "status" in message.keys() and message["status"] == "WAIT":
             self.waiting = True
-            print(
-                f"[INFO]:Server is full. Estimated wait time {round(message['message'])} minutes."
+            logging.info(
+                f"Server is full. Estimated wait time {round(message['message'])} minutes."
             )
 
         if "message" in message.keys() and message["message"] == "DISCONNECT":
-            print("[INFO]: Server overtime disconnected.")
+            logging.info("Server overtime disconnected.")
             self.recording = False
 
         if "message" in message.keys() and message["message"] == "SERVER_READY":
@@ -161,8 +159,8 @@ class Client:
         if "language" in message.keys():
             self.language = message.get("language")
             lang_prob = message.get("language_prob")
-            print(
-                f"[INFO]: Server detected language {self.language} with probability {lang_prob}"
+            logging.info(
+                f"Server detected language {self.language} with probability {lang_prob}"
             )
             return
 
@@ -191,10 +189,10 @@ class Client:
             print(element)
 
     def on_error(self, ws, error):
-        print(error)
+        logging.error(error)
 
     def on_close(self, ws, close_status_code, close_msg):
-        print(f"[INFO]: Websocket connection closed: {close_status_code}: {close_msg}")
+        logging.info(f"Websocket connection closed: {close_status_code}: {close_msg}")
 
     def on_open(self, ws):
         """
@@ -207,9 +205,11 @@ class Client:
             ws (websocket.WebSocketApp): The WebSocket client instance.
 
         """
-        print(self.multilingual, self.language, self.task)
+        logging.info(
+            f"Multilingual: {self.multilingual}, Language: {self.language}, Task: {self.task}"
+        )
 
-        print("[INFO]: Opened connection")
+        logging.info("Opened connection")
         ws.send(
             json.dumps(
                 {
@@ -249,7 +249,7 @@ class Client:
         try:
             self.client_socket.send(message, websocket.ABNF.OPCODE_BINARY)
         except Exception as e:
-            print(e)
+            logging.error(e)
 
     def play_file(self, filename):
         """
@@ -350,7 +350,6 @@ class Client:
             wavfile.setsampwidth(2)
             wavfile.setframerate(self.rate)
             wavfile.writeframes(frames)
-
 
     # TODO: ahdnle json and audion messages
     def process_websocket_stream(self, ws_uri: str):
@@ -521,8 +520,7 @@ class TranscriptionClient:
     to send audio data for transcription to a server and receive transcribed text segments.
 
     Args:
-        host (str): The hostname or IP address of the server.
-        port (int): The port number to connect to on the server.
+        cloud_run_url (str): The URL of the Cloud Run instance hosting the server.
         is_multilingual (bool, optional): Indicates whether the transcription should support multiple languages (default is False).
         lang (str, optional): The primary language for transcription (used if `is_multilingual` is False). Default is None, which defaults to English ('en').
         translate (bool, optional): Indicates whether translation tasks are required (default is False).
@@ -533,13 +531,26 @@ class TranscriptionClient:
     Example:
         To create a TranscriptionClient and start transcription on microphone audio:
         ```python
-        transcription_client = TranscriptionClient(host="localhost", port=9090, is_multilingual=True)
+        transcription_client = TranscriptionClient(cloud_run_url="https://example-service-xyz-uc.a.run.app", is_multilingual=True)
         transcription_client()
         ```
     """
 
-    def __init__(self, host, port, is_multilingual=False, lang=None, translate=False):
-        self.client = Client(host, port, is_multilingual, lang, translate)
+    def __init__(
+        self, cloud_run_url, is_multilingual=False, lang=None, translate=False
+    ):
+        """
+        Initialize the TranscriptionClient with server connection details.
+
+        Establishes a client for audio transcription tasks using a WebSocket connection to the specified Cloud Run instance.
+
+        Args:
+            cloud_run_url (str): The URL of the Cloud Run instance hosting the server.
+            is_multilingual (bool, optional): Whether to support multiple languages.
+            lang (str, optional): The primary language for transcription.
+            translate (bool, optional): Whether translation tasks are required.
+        """
+        self.client = Client(cloud_run_url, is_multilingual, lang, translate)
 
     def __call__(self, audio=None, hls_url=None, ws_uri=None):
         """

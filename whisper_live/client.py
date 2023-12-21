@@ -11,6 +11,9 @@ import json
 import websocket
 import uuid
 import time
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 
 def resample(file: str, sr: int = 16000):
@@ -22,7 +25,7 @@ def resample(file: str, sr: int = 16000):
     Args:
         file (str): The audio file to open
         sr (int): The sample rate to resample the audio if necessary
-    
+
     Returns:
         resampled_file (str): The resampled audio file
     """
@@ -47,21 +50,21 @@ class Client:
     """
     Handles audio recording, streaming, and communication with a server using WebSocket.
     """
+
     INSTANCES = {}
 
     def __init__(
-        self, host=None, port=None, is_multilingual=False, lang=None, translate=False, model_size="small"
+        self, cloud_run_url=None, is_multilingual=False, lang=None, translate=False
     ):
         """
         Initializes a Client instance for audio recording and streaming to a server.
 
-        If host and port are not provided, the WebSocket connection will not be established.
+        If cloud_run_url is not provided, the WebSocket connection will not be established.
         When translate is True, the task will be set to "translate" instead of "transcribe".
-        he audio recording starts immediately upon initialization.
+        The audio recording starts immediately upon initialization.
 
         Args:
-            host (str): The hostname or IP address of the server.
-            port (int): The port number for the WebSocket server.
+            cloud_run_url (str): The Google Cloud Run URL of the server.
             is_multilingual (bool, optional): Specifies if multilingual transcription is enabled. Default is False.
             lang (str, optional): The selected language for transcription when multilingual is disabled. Default is None.
             translate (bool, optional): Specifies if the task is translation. Default is False.
@@ -80,9 +83,7 @@ class Client:
         self.last_response_recieved = None
         self.disconnect_if_no_response_for = 15
         self.multilingual = is_multilingual
-        self.language = lang
-        self.model_size = model_size
-        self.server_error = False
+        self.language = lang if is_multilingual else "en"
         if translate:
             self.task = "translate"
 
@@ -97,10 +98,9 @@ class Client:
             frames_per_buffer=self.chunk,
         )
 
-        if host is not None and port is not None:
-            socket_url = f"ws://{host}:{port}"
+        if cloud_run_url is not None:
             self.client_socket = websocket.WebSocketApp(
-                socket_url,
+                cloud_run_url,
                 on_open=lambda ws: self.on_open(ws),
                 on_message=lambda ws, message: self.on_message(ws, message),
                 on_error=lambda ws, error: self.on_error(ws, error),
@@ -109,7 +109,7 @@ class Client:
                 ),
             )
         else:
-            print("[ERROR]: No host or port specified.")
+            logging.error("No Google Cloud Run URL specified.")
             return
 
         Client.INSTANCES[self.uid] = self
@@ -120,12 +120,12 @@ class Client:
         self.ws_thread.start()
 
         self.frames = b""
-        print("[INFO]: * recording")
+        logging.info("* recording")
 
     def on_message(self, ws, message):
         """
         Callback function called when a message is received from the server.
-        
+
         It updates various attributes of the client based on the received message, including
         recording status, language detection, and server messages. If a disconnect message
         is received, it sets the recording status to False.
@@ -139,22 +139,17 @@ class Client:
         message = json.loads(message)
 
         if self.uid != message.get("uid"):
-            print("[ERROR]: invalid client uid")
+            logging.error("invalid client uid")
             return
 
-        if "status" in message.keys():
-            if message["status"] == "WAIT":
-                self.waiting = True
-                print(
-                    f"[INFO]:Server is full. Estimated wait time {round(message['message'])} minutes."
-                )
-            elif message["status"] == "ERROR":
-                print(f"Message from Server: {message['message']}")
-                self.server_error = True
-            return
+        if "status" in message.keys() and message["status"] == "WAIT":
+            self.waiting = True
+            logging.info(
+                f"Server is full. Estimated wait time {round(message['message'])} minutes."
+            )
 
         if "message" in message.keys() and message["message"] == "DISCONNECT":
-            print("[INFO]: Server overtime disconnected.")
+            logging.info("Server overtime disconnected.")
             self.recording = False
 
         if "message" in message.keys() and message["message"] == "SERVER_READY":
@@ -164,8 +159,8 @@ class Client:
         if "language" in message.keys():
             self.language = message.get("language")
             lang_prob = message.get("language_prob")
-            print(
-                f"[INFO]: Server detected language {self.language} with probability {lang_prob}"
+            logging.info(
+                f"Server detected language {self.language} with probability {lang_prob}"
             )
             return
 
@@ -194,15 +189,15 @@ class Client:
             print(element)
 
     def on_error(self, ws, error):
-        print(error)
+        logging.error(error)
 
     def on_close(self, ws, close_status_code, close_msg):
-        print(f"[INFO]: Websocket connection closed: {close_status_code}: {close_msg}")
+        logging.info(f"Websocket connection closed: {close_status_code}: {close_msg}")
 
     def on_open(self, ws):
         """
         Callback function called when the WebSocket connection is successfully opened.
-        
+
         Sends an initial configuration message to the server, including client UID, multilingual mode,
         language selection, and task type.
 
@@ -210,9 +205,11 @@ class Client:
             ws (websocket.WebSocketApp): The WebSocket client instance.
 
         """
-        print(self.multilingual, self.language, self.task)
+        logging.info(
+            f"Multilingual: {self.multilingual}, Language: {self.language}, Task: {self.task}"
+        )
 
-        print("[INFO]: Opened connection")
+        logging.info("Opened connection")
         ws.send(
             json.dumps(
                 {
@@ -220,7 +217,6 @@ class Client:
                     "multilingual": self.multilingual,
                     "language": self.language,
                     "task": self.task,
-                    "model_size": self.model_size,
                 }
             )
         )
@@ -229,8 +225,8 @@ class Client:
     def bytes_to_float_array(audio_bytes):
         """
         Convert audio data from bytes to a NumPy float array.
-        
-        It assumes that the audio data is in 16-bit PCM format. The audio data is normalized to 
+
+        It assumes that the audio data is in 16-bit PCM format. The audio data is normalized to
         have values between -1 and 1.
 
         Args:
@@ -253,15 +249,15 @@ class Client:
         try:
             self.client_socket.send(message, websocket.ABNF.OPCODE_BINARY)
         except Exception as e:
-            print(e)
+            logging.error(e)
 
     def play_file(self, filename):
         """
         Play an audio file and send it to the server for processing.
-        
+
         Reads an audio file, plays it through the audio output, and simultaneously sends
-        the audio data to the server for processing. It uses PyAudio to create an audio 
-        stream for playback. The audio data is read from the file in chunks, converted to 
+        the audio data to the server for processing. It uses PyAudio to create an audio
+        stream for playback. The audio data is read from the file in chunks, converted to
         floating-point format, and sent to the server using WebSocket communication.
         This method is typically used when you want to process pre-recorded audio and send it
         to the server in real-time.
@@ -269,7 +265,7 @@ class Client:
         Args:
             filename (str): The path to the audio file to be played and sent to the server.
         """
-        
+
         # read audio and create pyaudio stream
         with wave.open(filename, "rb") as wavfile:
             self.stream = self.p.open(
@@ -293,7 +289,10 @@ class Client:
                 wavfile.close()
 
                 assert self.last_response_recieved
-                while time.time() - self.last_response_recieved < self.disconnect_if_no_response_for:
+                while (
+                    time.time() - self.last_response_recieved
+                    < self.disconnect_if_no_response_for
+                ):
                     continue
                 self.stream.close()
                 self.close_websocket()
@@ -310,7 +309,7 @@ class Client:
         """
         Close the WebSocket connection and join the WebSocket thread.
 
-        First attempts to close the WebSocket connection using `self.client_socket.close()`. After 
+        First attempts to close the WebSocket connection using `self.client_socket.close()`. After
         closing the connection, it joins the WebSocket thread to ensure proper termination.
 
         """
@@ -337,7 +336,7 @@ class Client:
         """
         Write audio frames to a WAV file.
 
-        The WAV file is created or overwritten with the specified name. The audio frames should be 
+        The WAV file is created or overwritten with the specified name. The audio frames should be
         in the correct format and match the specified channel, sample width, and sample rate.
 
         Args:
@@ -352,6 +351,39 @@ class Client:
             wavfile.setframerate(self.rate)
             wavfile.writeframes(frames)
 
+    # TODO: ahdnle json and audion messages
+    def process_websocket_stream(self, ws_uri: str):
+        """
+        Connect to a WebSocket source, process the audio stream, and send it for transcription.
+
+        Args:
+            ws_uri (str): The URI of the WebSocket source.
+        """
+        logging.info("[INFO]: Connecting to WebSocket stream...")
+
+        def on_message(ws, message):
+            # Process the incoming message as audio bytes
+            audio_array = self.bytes_to_float_array(message)
+            self.send_packet_to_server(audio_array.tobytes())
+
+        def on_error(ws, error):
+            logging.error(f"[ERROR]: WebSocket error: {error}")
+
+        def on_close(ws, close_status_code, close_msg):
+            logging.info(
+                f"[INFO]: WebSocket connection closed: {close_status_code}, {close_msg}"
+            )
+
+        # Create WebSocket client
+        ws_client = websocket.WebSocketApp(
+            ws_uri, on_message=on_message, on_error=on_error, on_close=on_close
+        )
+
+        # Start the WebSocket client in a thread
+        ws_thread = threading.Thread(target=ws_client.run_forever)
+        ws_thread.setDaemon(True)
+        ws_thread.start()
+
     def process_hls_stream(self, hls_url):
         """
         Connect to an HLS source, process the audio stream, and send it for transcription.
@@ -359,15 +391,14 @@ class Client:
         Args:
             hls_url (str): The URL of the HLS stream source.
         """
-        print("[INFO]: Connecting to HLS stream...")
+        logging.info("[INFO]: Connecting to HLS stream...")
         process = None  # Initialize process to None
 
         try:
             # Connecting to the HLS stream using ffmpeg-python
             process = (
-                ffmpeg
-                .input(hls_url, threads=0)
-                .output('-', format='s16le', acodec='pcm_s16le', ac=1, ar=self.rate)
+                ffmpeg.input(hls_url, threads=0)
+                .output("-", format="s16le", acodec="pcm_s16le", ac=1, ar=self.rate)
                 .run_async(pipe_stdout=True, pipe_stderr=True)
             )
 
@@ -375,18 +406,18 @@ class Client:
             while True:
                 in_bytes = process.stdout.read(self.chunk * 2)  # 2 bytes per sample
                 if not in_bytes:
+                    logging.info("[INFO]: No more bytes to read from HLS stream.")
                     break
                 audio_array = self.bytes_to_float_array(in_bytes)
                 self.send_packet_to_server(audio_array.tobytes())
 
         except Exception as e:
-            print(f"[ERROR]: Failed to connect to HLS stream: {e}")
+            logging.error(f"[ERROR]: Failed to connect to HLS stream: {e}")
         finally:
             if process:
                 process.kill()
 
-        print("[INFO]: HLS stream processing finished.")
-
+        logging.info("[INFO]: HLS stream processing finished.")
 
     def record(self, out_file="output_recording.wav"):
         """
@@ -398,7 +429,7 @@ class Client:
 
         Audio data is saved in chunks to the "chunks" directory. Each chunk is saved as a separate WAV file.
         The recording will continue until the specified duration is reached or until the `RECORDING` flag is set to `False`.
-        The recording process can be interrupted by sending a KeyboardInterrupt (e.g., pressing Ctrl+C). After recording, 
+        The recording process can be interrupted by sending a KeyboardInterrupt (e.g., pressing Ctrl+C). After recording,
         the method combines all the saved audio chunks into the specified `out_file`.
 
         Args:
@@ -448,8 +479,8 @@ class Client:
     def write_output_recording(self, n_audio_file, out_file):
         """
         Combine and save recorded audio chunks into a single WAV file.
-        
-        The individual audio chunk files are expected to be located in the "chunks" directory. Reads each chunk 
+
+        The individual audio chunk files are expected to be located in the "chunks" directory. Reads each chunk
         file, appends its audio data to the final recording, and then deletes the chunk file. After combining
         and saving, the final recording is stored in the specified `out_file`.
 
@@ -489,8 +520,7 @@ class TranscriptionClient:
     to send audio data for transcription to a server and receive transcribed text segments.
 
     Args:
-        host (str): The hostname or IP address of the server.
-        port (int): The port number to connect to on the server.
+        cloud_run_url (str): The URL of the Cloud Run instance hosting the server.
         is_multilingual (bool, optional): Indicates whether the transcription should support multiple languages (default is False).
         lang (str, optional): The primary language for transcription (used if `is_multilingual` is False). Default is None, which defaults to English ('en').
         translate (bool, optional): Indicates whether translation tasks are required (default is False).
@@ -501,33 +531,51 @@ class TranscriptionClient:
     Example:
         To create a TranscriptionClient and start transcription on microphone audio:
         ```python
-        transcription_client = TranscriptionClient(host="localhost", port=9090, is_multilingual=True)
+        transcription_client = TranscriptionClient(cloud_run_url="https://example-service-xyz-uc.a.run.app", is_multilingual=True)
         transcription_client()
         ```
     """
-    def __init__(self, host, port, is_multilingual=False, lang=None, translate=False, model_size="small"):
-        self.client = Client(host, port, is_multilingual, lang, translate, model_size)
 
-    def __call__(self, audio=None, hls_url=None):
+    def __init__(
+        self, cloud_run_url, is_multilingual=False, lang=None, translate=False
+    ):
+        """
+        Initialize the TranscriptionClient with server connection details.
+
+        Establishes a client for audio transcription tasks using a WebSocket connection to the specified Cloud Run instance.
+
+        Args:
+            cloud_run_url (str): The URL of the Cloud Run instance hosting the server.
+            is_multilingual (bool, optional): Whether to support multiple languages.
+            lang (str, optional): The primary language for transcription.
+            translate (bool, optional): Whether translation tasks are required.
+        """
+        self.client = Client(cloud_run_url, is_multilingual, lang, translate)
+
+    def __call__(self, audio=None, hls_url=None, ws_uri=None):
         """
         Start the transcription process.
 
         Initiates the transcription process by connecting to the server via a WebSocket. It waits for the server
-        to be ready to receive audio data and then sends audio for transcription. If an audio file is provided, it 
+        to be ready to receive audio data and then sends audio for transcription. If an audio file is provided, it
         will be played and streamed to the server; otherwise, it will perform live recording.
 
         Args:
             audio (str, optional): Path to an audio file for transcription. Default is None, which triggers live recording.
-                   
+            hls_url (str, optional): URL of an HLS stream source. Default is None.
+            ws_uri (str, optional): URI of a WebSocket stream source. Default is None.
         """
         print("[INFO]: Waiting for server ready ...")
         while not self.client.recording:
-            if self.client.waiting or self.client.server_error:
+            if self.client.waiting:
                 self.client.close_websocket()
                 return
-
+            pass
         print("[INFO]: Server Ready!")
-        if hls_url is not None:
+
+        if ws_uri is not None:
+            self.client.process_websocket_stream(ws_uri)
+        elif hls_url is not None:
             self.client.process_hls_stream(hls_url)
         elif audio is not None:
             resampled_file = resample(audio)

@@ -55,6 +55,7 @@ class Client:
 
     def __init__(
         self, cloud_run_url=None, is_multilingual=False, lang=None, translate=False
+
     ):
         """
         Initializes a Client instance for audio recording and streaming to a server.
@@ -83,7 +84,9 @@ class Client:
         self.last_response_recieved = None
         self.disconnect_if_no_response_for = 15
         self.multilingual = is_multilingual
-        self.language = lang if is_multilingual else "en"
+        self.language = lang
+        self.model_size = model_size
+        self.server_error = False
         if translate:
             self.task = "translate"
 
@@ -142,11 +145,17 @@ class Client:
             logging.error("invalid client uid")
             return
 
-        if "status" in message.keys() and message["status"] == "WAIT":
-            self.waiting = True
-            logging.info(
-                f"Server is full. Estimated wait time {round(message['message'])} minutes."
-            )
+
+        if "status" in message.keys():
+            if message["status"] == "WAIT":
+                self.waiting = True
+                print(
+                    f"[INFO]:Server is full. Estimated wait time {round(message['message'])} minutes."
+                )
+            elif message["status"] == "ERROR":
+                print(f"Message from Server: {message['message']}")
+                self.server_error = True
+            return
 
         if "message" in message.keys() and message["message"] == "DISCONNECT":
             logging.info("Server overtime disconnected.")
@@ -217,6 +226,7 @@ class Client:
                     "multilingual": self.multilingual,
                     "language": self.language,
                     "task": self.task,
+                    "model_size": self.model_size,
                 }
             )
         )
@@ -567,10 +577,10 @@ class TranscriptionClient:
         """
         print("[INFO]: Waiting for server ready ...")
         while not self.client.recording:
-            if self.client.waiting:
+            if self.client.waiting or self.client.server_error:
                 self.client.close_websocket()
                 return
-            pass
+
         print("[INFO]: Server Ready!")
 
         if ws_uri is not None:

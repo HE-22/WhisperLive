@@ -14,6 +14,9 @@ import time
 import logging
 
 logging.basicConfig(level=logging.INFO)
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 
 def resample(file: str, sr: int = 16000):
@@ -142,11 +145,17 @@ class Client:
             logging.error("invalid client uid")
             return
 
-        if "status" in message.keys() and message["status"] == "WAIT":
-            self.waiting = True
-            logging.info(
-                f"Server is full. Estimated wait time {round(message['message'])} minutes."
-            )
+
+        if "status" in message.keys():
+            if message["status"] == "WAIT":
+                self.waiting = True
+                print(
+                    f"[INFO]:Server is full. Estimated wait time {round(message['message'])} minutes."
+                )
+            elif message["status"] == "ERROR":
+                print(f"Message from Server: {message['message']}")
+                self.server_error = True
+            return
 
         if "message" in message.keys() and message["message"] == "DISCONNECT":
             logging.info("Server overtime disconnected.")
@@ -558,10 +567,13 @@ class TranscriptionClient:
 
         Initiates the transcription process by connecting to the server via a WebSocket. It waits for the server
         to be ready to receive audio data and then sends audio for transcription. If an audio file is provided, it
+        to be ready to receive audio data and then sends audio for transcription. If an audio file is provided, it
         will be played and streamed to the server; otherwise, it will perform live recording.
 
         Args:
             audio (str, optional): Path to an audio file for transcription. Default is None, which triggers live recording.
+            hls_url (str, optional): URL of an HLS stream source. Default is None.
+            ws_uri (str, optional): URI of a WebSocket stream source. Default is None.
             hls_url (str, optional): URL of an HLS stream source. Default is None.
             ws_uri (str, optional): URI of a WebSocket stream source. Default is None.
         """

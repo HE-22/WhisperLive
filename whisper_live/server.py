@@ -103,7 +103,9 @@ class TranscriptionServer:
             language=options["language"],
             task=options["task"],
             client_uid=options["uid"],
+
             model_size=options["model_size"],
+
         )
 
         self.clients[websocket] = client
@@ -194,6 +196,7 @@ class ServeClient:
         multilingual=False,
         language=None,
         client_uid=None,
+
         model_size="large-v2",
     ):
         """
@@ -227,6 +230,7 @@ class ServeClient:
             return
 
         self.transcriber = WhisperModel(
+
             self.model_size,
             device=device,
             compute_type="int8" if device == "cpu" else "float16",
@@ -261,6 +265,7 @@ class ServeClient:
         self.websocket.send(
             json.dumps({"uid": self.client_uid, "message": self.SERVER_READY})
         )
+
 
     def get_model_size(self, model_size):
         """

@@ -5,6 +5,7 @@
 *.wav
 *.mp3
 settings.json
+*.pyc
 
 
 # Byte-compiled / optimized / DLL files

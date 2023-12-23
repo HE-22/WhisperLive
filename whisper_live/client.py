@@ -145,7 +145,6 @@ class Client:
             logging.error("invalid client uid")
             return
 
-
         if "status" in message.keys():
             if message["status"] == "WAIT":
                 self.waiting = True
@@ -593,4 +592,5 @@ class TranscriptionClient:
             resampled_file = resample(audio)
             self.client.play_file(resampled_file)
         else:
+            logging.info("[INFO]: reached live recording - won't record")
             self.client.record()

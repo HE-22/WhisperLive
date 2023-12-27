@@ -12,9 +12,12 @@ import websocket
 import uuid
 import time
 import logging
+import asyncio
+import colorama
 
-logging.basicConfig(level=logging.INFO)
-import logging
+
+from live_translation.translate import translate_text
+
 
 logging.basicConfig(level=logging.INFO)
 
@@ -86,6 +89,7 @@ class Client:
         self.last_response_recieved = None
         self.disconnect_if_no_response_for = 15
         self.multilingual = is_multilingual
+        self.server_error = False
         self.language = lang if is_multilingual else "en"
         if translate:
             self.task = "translate"
@@ -186,15 +190,38 @@ class Client:
         # keep only last 3
         if len(text) > 3:
             text = text[-3:]
+
+        # Join the transcribed text segments into a single string
+        transcribed_text = "".join(text)
+
+        # Check if there is text in transcription before translating
+        if not transcribed_text:
+            logging.info("No text in transcription to translate.")
+            return
+
+        # Wrap the transcribed text to a width of 60 characters
         wrapper = textwrap.TextWrapper(width=60)
-        word_list = wrapper.wrap(text="".join(text))
-        # Print each line.
-        if os.name == "nt":
-            os.system("cls")
-        else:
-            os.system("clear")
+        word_list = wrapper.wrap(text=transcribed_text)
+
+        # Log each wrapped line of the transcribed text
         for element in word_list:
-            print(element)
+            logging.info(
+                colorama.Fore.RED
+                + f"Transcription: {element}"
+                + colorama.Style.RESET_ALL
+            )
+
+            # Translate the transcribed text from English to Spanish
+            try:
+                translated_text = translate_text(element, "English", "pirate talk")
+                # Log the translated text
+                logging.info(
+                    colorama.Fore.GREEN
+                    + f"Translation: {translated_text}"
+                    + colorama.Style.RESET_ALL
+                )
+            except Exception as e:
+                logging.error(f"An error occurred during translation: {e}")
 
     def on_error(self, ws, error):
         logging.error(error)

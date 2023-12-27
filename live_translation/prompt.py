@@ -22,6 +22,3 @@ system_prompt_template = PromptTemplate.from_template(
     """
 )
 
-# prompt = prompt_template.format(lang1="English", lang2="Spanish")
-
-# print(prompt)
